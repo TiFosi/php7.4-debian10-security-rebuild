@@ -1,0 +1,5 @@
+php-src-deb/
+out/
+*.log
+*.patch
+*.deb

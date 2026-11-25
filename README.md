@@ -25,21 +25,36 @@ git log -1 --format='%H %s'        # write down the commit you build from
 cd ..
 ```
 
-Check that the fix for each CVE you need is in the packaging. First, find the patch file:
+Check that the fix for each CVE you need is in the packaging. First, find the CVE in `debian/changelog`,
+which names the release that backported it:
 
 ```sh
-grep -l 'CVE-2026-109618' php-src-deb/debian/patches/*.patch
+awk '/^php7\.4 \(/{v=$2} /CVE-2026-129289/{print v; exit}' php-src-deb/debian/changelog   # prints (1:7.4.33-36)
 ```
 
-Then check that this file is listed in `series`, otherwise it is not applied:
+Then check that the patch is listed in `series`, otherwise it is not applied:
 
 ```sh
 grep -n '<patch file name>' php-src-deb/debian/patches/series
 ```
 
-For example, `1:7.4.33-31` contains `0164-Avoid-state-corruption-via-bailout.patch`.
+Do not grep the patch files for the CVE number: recent patches are named after the GitHub advisory
+(`GHSA-xxxx-xxxx-xxxx`), not the CVE, and the CVE only appears in the `Add-NEWS-entries` patch,
+which changes nothing but the `NEWS` file. Look up the GHSA identifier of the CVE (in the advisory
+on <https://github.com/php/php-src/security/advisories>), then search the patch names for it:
 
-If either command prints nothing, the fix is not in the packaging yet. You can add the upstream fix yourself.
+```sh
+ls php-src-deb/debian/patches/ | grep -i '<GHSA id>'
+```
+
+For example, `1:7.4.33-36` backports the PHP 2026-11-19 security release (from 8.2.36). It fixes
+CVE-2026-129289 (PHP-FPM request smuggling) with
+`0204-Fix-GHSA-qc49-hpvq-g2w6-Drain-unread-request-bodies.patch`.
+CVE-2026-109618 is fixed by `0163-Avoid-state-corruption-via-bailout.patch` (backported in `1:7.4.33-31`).
+Patch numbers can change between releases: search by name, not by number.
+
+If the CVE is not in the changelog, or the patch is not in `series`, the fix is not in the packaging yet.
+You can add the upstream fix yourself.
 Upstream publishes the EOL fixes as branches in <https://github.com/php/php-src>, such as
 `PHP-7.4-CVE-2026-109618-109619`:
 
@@ -54,14 +69,22 @@ echo 9999-upstream-fix.patch >> php-src-deb/debian/patches/series
 ## 2. Build
 
 ```sh
+mkdir -p logs
 docker build -t php74-buster-build .
-docker run --rm -v "$PWD/out:/out" \
-  -e CHANGELOG_MSG='Rebuild for Debian 10 (buster) - CVE-2026-109618, CVE-2026-109619' \
-  php74-buster-build
+docker run --rm -v "$PWD/out:/out" -e OUT_UID="$(id -u):$(id -g)" \
+  -e CHANGELOG_MSG='Rebuild for Debian 10 (buster) - PHP 2026-11-19 security release' \
+  php74-buster-build 2>&1 | tee "logs/build-$(date +%F).log"
 ```
 
-The packages are written to `out/`, for example `php7.4-fpm_7.4.33-31~deb10+1_amd64.deb`.
-If you rebuild the same upstream version again, `dch` raises the suffix to `~deb10+2`, and so on.
+The packages are written to `out/`, for example `php7.4-fpm_7.4.33-38~deb10+1_amd64.deb`.
+`OUT_UID` makes the files belong to you instead of root. The `-dbgsym` packages hold debug symbols:
+you do not need to deploy them.
+
+Every build starts again from the version in `php-src-deb/debian/changelog`, so a rebuild of the same
+packaging also produces `~deb10+1`. To publish a second rebuild of the same version, raise the suffix
+yourself with `-e DEB10_REV=2`.
+
+Move or delete the previous `out/` first, otherwise the old and new packages end up mixed in it.
 
 ## 3. Test in a clean container
 
@@ -78,7 +101,19 @@ Also check that the packages make no outbound telemetry. Sury's packaging carrie
 which should be compiled out when `TELEMETRY_HOST` is undefined:
 
 ```sh
-for f in out/*.deb; do dpkg-deb --fsys-tarfile "$f" | tar -xO 2>/dev/null; done | strings | grep -i telemetry
+for f in out/*.deb; do
+  n=$(dpkg-deb --fsys-tarfile "$f" | tar -xO 2>/dev/null | strings | grep -ic telemetry)
+  [ "$n" -gt 0 ] && echo "$n $f"
+done
+```
+
+The only package listed should be `php7.4-dev`: it ships the `secure_dns_telemetry.h` header and the
+compiler flags (`TELEMETRY_PACKAGE`, `TELEMETRY_VERSION`) in `php-config7.4`, which is expected. The
+telemetry call is only compiled when `TELEMETRY_HOST` is defined. The `-DTELEMETRY_HOST` flag must never
+appear in the build log:
+
+```sh
+grep -c -- '-DTELEMETRY_HOST' logs/build-*.log    # expected: 0
 ```
 
 ## 4. Deploy
@@ -89,7 +124,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 When a new release appears on the `debian/main/7.4` branch (a commit such as
 "Update changelog for 1:7.4.33-XX"), run `git -C php-src-deb pull` and repeat steps 1 to 4.
-The new packages, such as `7.4.33-32~deb10+1`, upgrade the previous ones normally.
+The new packages, such as `7.4.33-39~deb10+1`, upgrade the previous ones normally.
 
 This works as long as the branch is maintained and its build dependencies are still available on buster.
 If the build fails at `mk-build-deps` or during compilation, the packaging has moved past buster.

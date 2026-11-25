@@ -51,7 +51,7 @@ If a pool uses its own `PHP_INI_SCAN_DIR`, also record `PHP_INI_SCAN_DIR=<dir> p
 
 ## 2. Copy
 
-Only copy the packages that match the installed `php7.4-*` packages (from step 0):
+Only copy the packages that match the installed `php7.4-*` packages (from step 0). Leave out the `-dbgsym` packages, and check that `out/` only holds the new version:
 
 ```sh
 ssh <host> 'mkdir -p /tmp/php74-deb'
